@@ -1,8 +1,17 @@
 #include <stdio.h>
 #include <unistd.h>
 #include <errno.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <stdlib.h>
+#include <string.h>
  
 #define MAX_LINE 80 /* 80 chars per line, per command, should be enough. */
+ 
+
+
+
+
  
 /* The setup function below will not return any value, but it will just: read
 in the next command line; separate it into distinct arguments (using blanks as
@@ -77,22 +86,76 @@ void setup(char inputBuffer[], char *args[],int *background)
 	for (i = 0; i <= ct; i++)
 		printf("args %d = %s\n",i,args[i]);
 } /* end of setup routine */
- 
+
+
 int main(void)
 {
-            char inputBuffer[MAX_LINE]; /*buffer to hold command entered */
-            int background; /* equals 1 if a command is followed by '&' */
-            char *args[MAX_LINE/2 + 1]; /*command line arguments */
-            while (1){
-                        background = 0;
-                        printf("myshell: ");
-                        /*setup() calls exit() when Control-D is entered */
-                        setup(inputBuffer, args, &background);
-                       
-                        /** the steps are:
-                        (1) fork a child process using fork()
-                        (2) the child process will invoke execv()
-						(3) if background == 0, the parent will wait,
-                        otherwise it will invoke the setup() function again. */
+    char inputBuffer[MAX_LINE]; /* buffer to hold command entered */
+    int background;            /* equals 1 if a command is followed by '&' */
+    char args[MAX_LINE / 2 + 1]; / command line arguments */
+
+    while (1) {
+        background = 0;
+        printf("myshell: ");
+        /* setup() calls exit() when Control-D is entered */
+        setup(inputBuffer, args, &background);
+
+        if (args[0] == NULL) {
+            continue; /* empty command */
+        }
+
+        pid_t pid = fork(); /* create a new process */
+
+        if (pid < 0) {
+            perror("Fork failed");
+            continue;
+        }
+
+        if (pid == 0) {
+            /* Child process: Execute the command */
+
+            /* Get the PATH environment variable */
+            char *pathEnv = getenv("PATH");
+            if (!pathEnv) {
+                fprintf(stderr, "Error: PATH environment variable not set.\n");
+                exit(1);
             }
+
+            /* Tokenize PATH and search for the command */
+            char *pathDir = strtok(pathEnv, ":");
+            char commandPath[512]; /* Buffer to store command path */
+            int commandFound = 0;
+
+            while (pathDir != NULL) {
+            if(args[0] != NULL){
+                snprintf(commandPath, sizeof(commandPath), "%s/%s", pathDir, args[0]);
+                }
+
+                if (access(commandPath, X_OK) == 0) {
+                    commandFound = 1;
+                    break;
+                }
+                pathDir = strtok(NULL, ":");
+            }
+
+            if (commandFound) {
+                /* Execute the command using execv() */
+                execv(commandPath, args);
+                perror("execv failed");
+                exit(1);
+            } else {
+                fprintf(stderr, "Command not found: %s\n", args[0]);
+                exit(1);
+            }
+        } else {
+            /* Parent process */
+            if (background == 0) {
+                /* Foreground process: wait for the child to complete */
+                waitpid(pid, NULL, 0);
+            } else {
+                /* Background process: don't wait, just continue */
+                printf("Process %d running in background\n", pid);
+            }
+        }
+    }
 }
