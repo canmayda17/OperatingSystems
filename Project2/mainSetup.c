@@ -92,7 +92,7 @@ int main(void)
 {
     char inputBuffer[MAX_LINE]; /* buffer to hold command entered */
     int background;            /* equals 1 if a command is followed by '&' */
-    char args[MAX_LINE / 2 + 1]; / command line arguments */
+    char *args[MAX_LINE / 2 + 1]; /* command line arguments */
 
     while (1) {
         background = 0;
@@ -156,6 +156,7 @@ int main(void)
                 /* Background process: don't wait, just continue */
                 printf("Process %d running in background\n", pid);
             }
-        }
-    }
+        }
+    }
 }
+
