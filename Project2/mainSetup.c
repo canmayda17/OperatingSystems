@@ -1,11 +1,12 @@
 #include <stdio.h>
+#include <unistd.h>
+#include <errno.h>
+
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
 #include <signal.h>
 #include <sys/types.h>
 #include <sys/wait.h>
-#include <errno.h>
  
 #define MAX_LINE 80 /* 80 chars per line, per command, should be enough. */
 #define HISTORY_SIZE 10
@@ -19,7 +20,7 @@ pid_t foreground_pid = 0;
 pid_t background_pids[HISTORY_SIZE];
 int background_count = 0;
 
-void setup(char inputBuffer[], char *args[], int *background);
+void setup(char inputBuffer[], char *args[],int *background);
 
 // Function to add a command to history
 void add_to_history(const char *command) {
@@ -78,8 +79,6 @@ void handle_exit() {
     exit(0);
 }
 
-
-
  
 /* The setup function below will not return any value, but it will just: read
 in the next command line; separate it into distinct arguments (using blanks as
@@ -104,7 +103,7 @@ void setup(char inputBuffer[], char *args[],int *background)
        the command that is read, and length holds the number of characters
        read in. inputBuffer is not a null terminated C-string. */
 
-    
+    start = -1;
     if (length == 0)
         exit(0);            /* ^d was entered, end of user command stream */
 
@@ -117,8 +116,7 @@ void setup(char inputBuffer[], char *args[],int *background)
 	exit(-1);           /* terminate with error code of -1 */
     }
 
-    start = -1;
-
+    printf(">>%s<<",inputBuffer);
     for (i=0;i<length;i++){ /* examine every character in the inputBuffer */
 
         switch (inputBuffer[i]){
@@ -159,7 +157,7 @@ void setup(char inputBuffer[], char *args[],int *background)
 
 int main(void)
 {
-    char inputBuffer[MAX_LINE]; /* buffer to hold command entered */
+    char inputBuffer[MAX_LINE]; /*buffer to hold command entered */
     int background;            /* equals 1 if a command is followed by '&' */
     char *args[MAX_LINE / 2 + 1]; /* command line arguments */
 
@@ -168,13 +166,17 @@ int main(void)
 
     while (1) {
         background = 0;
-        printf("myshell> ");
+        printf("myshell: ");
         fflush(stdout);
 
         /* setup() calls exit() when Control-D is entered */
         setup(inputBuffer, args, &background); // read user input
 
-
+        /** the steps are:
+                        (1) fork a child process using fork()
+                        (2) the child process will invoke execv()
+						(3) if background == 0, the parent will wait,
+                        otherwise it will invoke the setup() function again. */
 
 
         if (args[0] == NULL) {
