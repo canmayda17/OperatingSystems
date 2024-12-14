@@ -11,7 +11,6 @@
 #define MAX_LINE 80 /* 80 chars per line, per command */
 #define HISTORY_SIZE 10
 
-// Globals for managing history and foreground process
 char history[HISTORY_SIZE][MAX_LINE];
 int history_count = 0;
 char commandPath[512];
@@ -20,67 +19,98 @@ pid_t background_pids[HISTORY_SIZE];
 int background_count = 0;
 
 void setup(char inputBuffer[], char *args[], int *background);
-void add_to_history(const char *command);
-void print_history();
-void execute_history_command(int index, char inputBuffer[], char *args[], int *background);
-void bring_to_foreground(int pid);
-void handle_exit();
-void handle_redirection(char *args[]);
-void sigtstp_handler(int signum);
+void addToHistory(char *command);
+void printHistory();
+void historyCommand(int index, char inputBuffer[], char *args[], int *background);
+void moveBackgroundToForeground(int pid);
+void exitRequest();
+void handleRedirection(char *args[]);
+void terminateRunningProcess(int signum);
+
+
+/* The setup function below will not return any value, but it will just: read
+in the next command line; separate it into distinct arguments (using blanks as
+delimiters), and set the args array entries to point to the beginning of what
+will become null-terminated, C-style strings. */
 
 void setup(char inputBuffer[], char *args[], int *background) {
-    int length, i, start, ct;
+    int length, /* # of characters in the command line */
+        i,      /* loop index for accessing inputBuffer array */
+        start,  /* index where beginning of next command parameter is */
+        ct;     /* index of where to place the next parameter into args[] */
+
     ct = 0;
+
+    /* read what the user enters on the command line */
     length = read(STDIN_FILENO, inputBuffer, MAX_LINE);
     
-    if (length == 0) exit(0);
+    /* 0 is the system predefined file descriptor for stdin (standard input),
+       which is the user's screen in this case. inputBuffer by itself is the
+       same as &inputBuffer[0], i.e. the starting address of where to store
+       the command that is read, and length holds the number of characters
+       read in. inputBuffer is not a null terminated C-string. */
+
+    if (length == 0){
+        exit(0);  /* ^d was entered, end of user command stream */
+    }
+
+    /* the signal interrupted the read system call */
+    /* if the process is in the read() system call, read returns -1
+    However, if this occurs, errno is set to EINTR. We can check this  value
+    and disregard the -1 value */
 
     if ((length < 0) && (errno != EINTR)) {
         perror("Error reading command");
-        exit(-1);
+        exit(-1);  /* terminate with error code of -1 */
     }
-
-
 
     start = -1;
     *background = 0;
-    for (i = 0; i < length; i++) {
+
+    for (i = 0; i < length; i++) { /* examine every character in the inputBuffer */
+
         switch (inputBuffer[i]) {
             case ' ':
-            case '\t':
+            case '\t':                                  /* argument separators */
                 if (start != -1) {
-                    args[ct] = &inputBuffer[start];
+                    args[ct] = &inputBuffer[start];     /* set up pointer */
                     ct++;
                 }
-                inputBuffer[i] = '\0';
+                inputBuffer[i] = '\0';                  /* add a null char; make a C string */
                 start = -1;
                 break;
-            case '\n':
+            case '\n':                                  /* should be the final char examined */
                 if (start != -1) {
                     args[ct] = &inputBuffer[start];
                     ct++;
                 }
                 inputBuffer[i] = '\0';
-                args[ct] = NULL;
+                args[ct] = NULL;                        /* no more arguments to this command */
                 break;
-            default:
+            default:                                    /* some other character */
                 if (start == -1) start = i;
+
                 if (inputBuffer[i] == '&') {
                     *background = 1;
                     inputBuffer[i] = '\0';
                 }
-        }
+        }  /* end of switch */
     }
-    args[ct] = NULL;
-}
+    args[ct] = NULL;  /* just in case the input line was > 80 */
+    //for (i = 0; i <= ct; i++)
+		//printf("args %d = %s\n",i,args[i]);
+} /* end of setup routine */
 
-void add_to_history(const char *command) {
+
+
+
+void addToHistory(char *command) {
     strncpy(history[history_count % HISTORY_SIZE], command, MAX_LINE - 1);
-    //history[history_count % HISTORY_SIZE][MAX_LINE - 1] = '\0';
+    history[history_count % HISTORY_SIZE][MAX_LINE - 1] = '\0';
     history_count++;
 }
 
-void print_history() {
+void printHistory() {
     int start = (history_count > HISTORY_SIZE) ? history_count - HISTORY_SIZE : 0;
     int end = history_count;
     for (int i = history_count - 1; i >= start; i--) {
@@ -88,7 +118,7 @@ void print_history() {
     }
 }
 
-void execute_history_command(int index, char inputBuffer[], char *args[], int *background) {
+void historyCommand(int index, char inputBuffer[], char *args[], int *background) {
     int start = (history_count > HISTORY_SIZE) ? history_count - HISTORY_SIZE : 0;
     int end = history_count;
 
@@ -104,7 +134,7 @@ void execute_history_command(int index, char inputBuffer[], char *args[], int *b
     char *selected_command = history[effective_index % HISTORY_SIZE];
 
     printf("Executing command from history: %s\n", selected_command);
-    add_to_history(selected_command);
+    addToHistory(selected_command);
 
     setup(selected_command, args, background);
     
@@ -112,32 +142,46 @@ void execute_history_command(int index, char inputBuffer[], char *args[], int *b
 }
 
 
-
-void bring_to_foreground(int pid) {
+// fg %num
+void moveBackgroundToForeground(int pid) {
     for (int i = 0; i < background_count; i++) {
         if (background_pids[i] == pid) {
-            foreground_pid = pid;
-            waitpid(pid, NULL, 0);
-            foreground_pid = 0;
-            background_pids[i] = background_pids[--background_count];
+            foreground_pid = pid;  // Set as the foreground process
+            waitpid(pid, NULL, 0);  // Wait for the process to finish
+            foreground_pid = 0;  // Reset the foreground PID
+            background_count--;
+            background_pids[i] = background_pids[background_count];  // Remove from background list
             return;
         }
     }
     fprintf(stderr, "No such background process.\n");
 }
 
-void handle_exit() {
+
+void exitRequest() {
     if (background_count > 0) {
         printf("There are %d background processes running.\n", background_count);
         for (int i = 0; i < background_count; i++) {
             printf("PID: %d\n", background_pids[i]);
         }
+        printf("Do you want to terminate all background processes and exit? (y/n): ");
+        char choice = getchar();
+        if (choice == 'y' || choice == 'Y') {
+            for (int i = 0; i < background_count; i++) {
+                kill(background_pids[i], SIGKILL);
+            }
+            background_count = 0;
+            exit(0);
+        }
         return;
     }
-    exit(0);
+    else{
+        exit(0);
+    }
 }
 
-void handle_redirection(char *args[]) {
+
+void handleRedirection(char *args[]) {
     int i = 0;
 
     while (args[i] != NULL) {
@@ -186,54 +230,69 @@ void handle_redirection(char *args[]) {
     }
 }
 
-void sigtstp_handler(int signum) {
+//^z
+void terminateRunningProcess(int signum) {
     if (foreground_pid > 0) {
-        kill(foreground_pid, SIGKILL);
-        printf("Foreground process %d terminated.\n", foreground_pid);
+        // Send SIGKILL to the process group
+        kill(-foreground_pid, SIGKILL);  // Negative PID sends to the process group
+        printf("Foreground process %d and its group terminated.\n", foreground_pid);
         foreground_pid = 0;
     }
 }
 
-int main(void) {
-    char inputBuffer[MAX_LINE];
-    char *args[MAX_LINE / 2 + 1];
-    int background;
 
-    signal(SIGTSTP, sigtstp_handler);
+int main(void) {
+
+    char inputBuffer[MAX_LINE];    /*buffer to hold command entered */
+    int background; /* equals 1 if a command is followed by '&' */
+    char *args[MAX_LINE / 2 + 1]; /*command line arguments */
+    
+    signal(SIGTSTP, terminateRunningProcess);
 
     while (1) {
         background = 0;
         printf("myshell> ");
         fflush(stdout);
 
+        /*setup() calls exit() when Control-D is entered */
         setup(inputBuffer, args, &background);
+
+
+        /** the steps are:
+        (1) fork a child process using fork()
+        (2) the child process will invoke execv()
+        (3) if background == 0, the parent will wait,
+        otherwise it will invoke the setup() function again. */
+
+
+
 
         if (args[0] == NULL) continue;
         
         if (args[0] != NULL && strcmp(args[0], "history") != 0) {
-        add_to_history(inputBuffer);
+        addToHistory(inputBuffer);
         }
 
         if (strcmp(args[0], "history") == 0) {
             if (args[1] && strcmp(args[1], "-i") == 0) {
                 if (args[2]) {
                     int index = atoi(args[2]);
-                    execute_history_command(index, inputBuffer, args, &background);
+                    historyCommand(index, inputBuffer, args, &background);
                     continue;
                 } else {
                     fprintf(stderr, "Usage: history -i <index>\n");
                 }
             } else {
-                print_history();
+                printHistory();
             }
             continue;
         } else if (strcmp(args[0], "exit") == 0) {
-            handle_exit();
+            exitRequest();
             continue;
         } else if (strcmp(args[0], "fg") == 0) {
             if (args[1] && args[1][0] == '%') {
                 int pid = atoi(&args[1][1]);
-                bring_to_foreground(pid);
+                moveBackgroundToForeground(pid);
             } else {
                 fprintf(stderr, "Usage: fg %%<pid>\n");
             }
@@ -246,7 +305,7 @@ int main(void) {
             continue;
         }
         if (pid == 0) {
-            handle_redirection(args);
+            handleRedirection(args);
             char *pathEnv = getenv("PATH");
             if (!pathEnv) {
                 fprintf(stderr, "PATH not set\n");
