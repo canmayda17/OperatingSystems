@@ -7,6 +7,7 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <fcntl.h>
+#include <ctype.h>
 
 #define MAX_LINE 80 /* 80 chars per line, per command */
 #define HISTORY_SIZE 10
@@ -19,13 +20,14 @@ pid_t background_pids[HISTORY_SIZE];
 int background_count = 0;
 
 void setup(char inputBuffer[], char *args[], int *background);
-void addToHistory(char *command);
+void addToHistory(char *args[]);
 void printHistory();
 void historyCommand(int index, char inputBuffer[], char *args[], int *background);
 void moveBackgroundToForeground(int pid);
 void exitRequest();
 void handleRedirection(char *args[]);
 void terminateRunningProcess(int signum);
+int countWords(const char *buffer);
 
 
 /* The setup function below will not return any value, but it will just: read
@@ -42,6 +44,7 @@ void setup(char inputBuffer[], char *args[], int *background) {
     ct = 0;
 
     /* read what the user enters on the command line */
+    
     length = read(STDIN_FILENO, inputBuffer, MAX_LINE);
     
     /* 0 is the system predefined file descriptor for stdin (standard input),
@@ -102,13 +105,65 @@ void setup(char inputBuffer[], char *args[], int *background) {
 } /* end of setup routine */
 
 
+int countWords(const char *buffer) {
+    int in_word = 0;   // Flag to track if we are inside a word
+    int word_count = 0;
 
+    // Traverse each character in the buffer
+    while (*buffer != '\0') {
+        if (isspace((unsigned char)*buffer)) {
+            // If current character is whitespace, we're not in a word
+            in_word = 0;
+        } else if (!in_word) {
+            // If we encounter a non-whitespace character and we're not in a word, start a new word
+            in_word = 1;
+            word_count++;
+        }
+        buffer++; // Move to the next character
+    }
 
-void addToHistory(char *command) {
+    return word_count;
+}
+
+void addToHistory(char *args[]) {
+    char command[MAX_LINE] = ""; // Buffer to store the concatenated command
+    int i = 0;
+
+    // Concatenate arguments into a single command string
+    while (args[i] != NULL) {
+        strcat(command, args[i]);
+        strcat(command, " "); // Add a space between arguments
+        i++;
+    }
+
+    // Remove the trailing space
+    if (strlen(command) > 0) {
+        command[strlen(command) - 1] = '\0';
+    }
+
+    // Add the command to history
     strncpy(history[history_count % HISTORY_SIZE], command, MAX_LINE - 1);
-    history[history_count % HISTORY_SIZE][MAX_LINE - 1] = '\0';
+    history[history_count % HISTORY_SIZE][MAX_LINE - 1] = '\0'; // Ensure null-termination
     history_count++;
 }
+
+void addToHistoryForHistoryCommand(char args[]) {
+    // Ensure the input is not empty
+    if (args == NULL || strlen(args) == 0) {
+        return;
+    }
+
+    // Add the command to the history
+    strncpy(history[history_count % HISTORY_SIZE], args, MAX_LINE - 1);
+
+    // Null-terminate the string to prevent overflow
+    history[history_count % HISTORY_SIZE][MAX_LINE - 1] = '\0';
+
+    // Increment the history count
+    history_count++;
+}
+
+
 
 void printHistory() {
     int start = (history_count > HISTORY_SIZE) ? history_count - HISTORY_SIZE : 0;
@@ -131,13 +186,12 @@ void historyCommand(int index, char inputBuffer[], char *args[], int *background
     }
 
     // Retrieve the command from history
-    char *selected_command = history[effective_index % HISTORY_SIZE];
-
-    printf("Executing command from history: %s\n", selected_command);
-    addToHistory(selected_command);
-
-    setup(selected_command, args, background);
     
+
+    printf("Executing command from history: %s\n", history[effective_index % HISTORY_SIZE]);
+    addToHistoryForHistoryCommand(history[effective_index % HISTORY_SIZE]);
+    
+    //setup(history[effective_index % HISTORY_SIZE], NULL, background);
     
 }
 
@@ -270,7 +324,7 @@ int main(void) {
         if (args[0] == NULL) continue;
         
         if (args[0] != NULL && strcmp(args[0], "history") != 0) {
-        addToHistory(inputBuffer);
+        addToHistory(args);
         }
 
         if (strcmp(args[0], "history") == 0) {
