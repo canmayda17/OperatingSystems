@@ -18,9 +18,11 @@ char commandPath[512];
 pid_t foreground_pid = 0;
 pid_t background_pids[HISTORY_SIZE];
 int background_count = 0;
+int isFromHistory = 0;
 
 void setup(char inputBuffer[], char *args[], int *background);
 void addToHistory(char *args[]);
+void addToHistoryForHistoryCommand(char args[]);
 void printHistory();
 void historyCommand(int index, char inputBuffer[], char *args[], int *background);
 void moveBackgroundToForeground(int pid);
@@ -45,7 +47,12 @@ void setup(char inputBuffer[], char *args[], int *background) {
 
     /* read what the user enters on the command line */
     
-    length = read(STDIN_FILENO, inputBuffer, MAX_LINE);
+    if (isFromHistory == 1) {
+        length = strlen(inputBuffer) + 1;  // Use the string length directly
+    } 
+    else {
+        length = read(STDIN_FILENO, inputBuffer, MAX_LINE);
+    }
     
     /* 0 is the system predefined file descriptor for stdin (standard input),
        which is the user's screen in this case. inputBuffer by itself is the
@@ -71,7 +78,15 @@ void setup(char inputBuffer[], char *args[], int *background) {
     *background = 0;
 
     for (i = 0; i < length; i++) { /* examine every character in the inputBuffer */
-
+        if((i + 1 == length)  && (inputBuffer[i] != '\n')){
+            if (start != -1) {
+            args[ct] = &inputBuffer[start];
+            ct++;
+            }
+        inputBuffer[i] = '\0';
+        args[ct] = NULL; 
+        continue;
+        }
         switch (inputBuffer[i]) {
             case ' ':
             case '\t':                                  /* argument separators */
@@ -106,81 +121,93 @@ void setup(char inputBuffer[], char *args[], int *background) {
 
 
 int countWords(const char *buffer) {
-    int in_word = 0;   // Flag to track if we are inside a word
-    int word_count = 0;
 
-    // Traverse each character in the buffer
+    int inWord = 0;
+    int wordCount = 0;
+
     while (*buffer != '\0') {
         if (isspace((unsigned char)*buffer)) {
-            // If current character is whitespace, we're not in a word
-            in_word = 0;
-        } else if (!in_word) {
-            // If we encounter a non-whitespace character and we're not in a word, start a new word
-            in_word = 1;
-            word_count++;
+            inWord = 0;
+        } else if (!inWord) {
+            inWord = 1;
+            wordCount++;
         }
         buffer++; // Move to the next character
     }
+    return wordCount;
 
-    return word_count;
 }
 
 void addToHistory(char *args[]) {
-    char command[MAX_LINE] = ""; // Buffer to store the concatenated command
+
+    char command[MAX_LINE] = ""; 
     int i = 0;
 
-    // Concatenate arguments into a single command string
     while (args[i] != NULL) {
         strcat(command, args[i]);
-        strcat(command, " "); // Add a space between arguments
+        strcat(command, " "); 
         i++;
     }
 
-    // Remove the trailing space
     if (strlen(command) > 0) {
         command[strlen(command) - 1] = '\0';
     }
 
-    // Add the command to history
     strncpy(history[history_count % HISTORY_SIZE], command, MAX_LINE - 1);
-    history[history_count % HISTORY_SIZE][MAX_LINE - 1] = '\0'; // Ensure null-termination
+
+    history[history_count % HISTORY_SIZE][MAX_LINE - 1] = '\0'; 
     history_count++;
+
 }
 
 void addToHistoryForHistoryCommand(char args[]) {
-    // Ensure the input is not empty
+
     if (args == NULL || strlen(args) == 0) {
         return;
     }
 
-    // Add the command to the history
     strncpy(history[history_count % HISTORY_SIZE], args, MAX_LINE - 1);
 
-    // Null-terminate the string to prevent overflow
     history[history_count % HISTORY_SIZE][MAX_LINE - 1] = '\0';
-
-    // Increment the history count
     history_count++;
 }
 
 
 
 void printHistory() {
-    int start = (history_count > HISTORY_SIZE) ? history_count - HISTORY_SIZE : 0;
+
+    int start;
     int end = history_count;
+    
+    if(history_count > HISTORY_SIZE){
+        start = history_count - HISTORY_SIZE;
+    }
+    else{
+        start = 0;
+    }
+
     for (int i = history_count - 1; i >= start; i--) {
         printf("%d %s\n", end - i - 1, history[i % HISTORY_SIZE]);
     }
+
 }
 
 void historyCommand(int index, char inputBuffer[], char *args[], int *background) {
-    int start = (history_count > HISTORY_SIZE) ? history_count - HISTORY_SIZE : 0;
+
+    int start;
     int end = history_count;
+    isFromHistory = 1;
 
-    // Invert the index to fetch the correct command
-    int effective_index = history_count - 1 - index;
+    if(history_count > HISTORY_SIZE){
+        start = history_count - HISTORY_SIZE;
+    }
+    else{
+        start = 0;
+    }
 
-    if (effective_index < start || effective_index >= end) {
+    int command_Index = history_count - 1 - index;
+
+    if (command_Index < start || command_Index >= end) {
         fprintf(stderr, "Invalid history index.\n");
         return;
     }
@@ -188,16 +215,56 @@ void historyCommand(int index, char inputBuffer[], char *args[], int *background
     // Retrieve the command from history
     
 
-    printf("Executing command from history: %s\n", history[effective_index % HISTORY_SIZE]);
-    addToHistoryForHistoryCommand(history[effective_index % HISTORY_SIZE]);
-    
-    //setup(history[effective_index % HISTORY_SIZE], NULL, background);
-    
+    char *command = history[command_Index % HISTORY_SIZE];
+    printf("Executing command from history: %s\n", command);
+
+    strncpy(inputBuffer, command, MAX_LINE - 1);
+    inputBuffer[MAX_LINE - 1] = '\0';
+
+    addToHistoryForHistoryCommand(command);
+
+    setup(inputBuffer, args, background);
+
+    isFromHistory = 0;
+
+    pid_t pid = fork();
+    if (pid < 0) {
+        perror("Fork failed");
+        return;
+    }
+    if (pid == 0) { // Child process
+        handleRedirection(args);
+        char *pathEnv = getenv("PATH");
+        if (!pathEnv) {
+            fprintf(stderr, "PATH not set\n");
+            exit(1);
+        }
+        char *pathDir = strtok(pathEnv, ":");
+        while (pathDir) {
+            snprintf(commandPath, sizeof(commandPath), "%s/%s", pathDir, args[0]);
+            if (access(commandPath, X_OK) == 0) {
+                execv(commandPath, args);
+                perror("execv failed");
+                exit(1);
+            }
+            pathDir = strtok(NULL, ":");
+        }
+        fprintf(stderr, "Command not found: %s\n", args[0]);
+        exit(1);
+    } else { // Parent process
+        if (!*background) {
+            waitpid(pid, NULL, 0);
+        } else {
+            printf("Background process started with PID %d\n", pid);
+        }
+    }
+
 }
 
 
 // fg %num
 void moveBackgroundToForeground(int pid) {
+
     for (int i = 0; i < background_count; i++) {
         if (background_pids[i] == pid) {
             foreground_pid = pid;  // Set as the foreground process
@@ -209,10 +276,12 @@ void moveBackgroundToForeground(int pid) {
         }
     }
     fprintf(stderr, "No such background process.\n");
+
 }
 
 
 void exitRequest() {
+
     if (background_count > 0) {
         printf("There are %d background processes running.\n", background_count);
         for (int i = 0; i < background_count; i++) {
@@ -232,15 +301,17 @@ void exitRequest() {
     else{
         exit(0);
     }
+
 }
 
 
 void handleRedirection(char *args[]) {
+
     int i = 0;
 
     while (args[i] != NULL) {
+
         if (strcmp(args[i], ">") == 0) {
-            // Standard output redirection
             int fd = open(args[i + 1], O_WRONLY | O_CREAT | O_TRUNC, 0644);
             if (fd < 0) {
                 perror("Error opening file for output redirection");
@@ -248,9 +319,9 @@ void handleRedirection(char *args[]) {
             }
             dup2(fd, STDOUT_FILENO);
             close(fd);
-            args[i] = NULL; // Remove redirection operators from args
-        } else if (strcmp(args[i], ">>") == 0) {
-            // Standard output append
+            args[i] = NULL;
+        } 
+        else if (strcmp(args[i], ">>") == 0) {
             int fd = open(args[i + 1], O_WRONLY | O_CREAT | O_APPEND, 0644);
             if (fd < 0) {
                 perror("Error opening file for output append");
@@ -259,8 +330,8 @@ void handleRedirection(char *args[]) {
             dup2(fd, STDOUT_FILENO);
             close(fd);
             args[i] = NULL;
-        } else if (strcmp(args[i], "<") == 0) {
-            // Standard input redirection
+        } 
+        else if (strcmp(args[i], "<") == 0) {
             int fd = open(args[i + 1], O_RDONLY);
             if (fd < 0) {
                 perror("Error opening file for input redirection");
@@ -269,8 +340,8 @@ void handleRedirection(char *args[]) {
             dup2(fd, STDIN_FILENO);
             close(fd);
             args[i] = NULL;
-        } else if (strcmp(args[i], "2>") == 0) {
-            // Standard error redirection
+        } 
+        else if (strcmp(args[i], "2>") == 0) {
             int fd = open(args[i + 1], O_WRONLY | O_CREAT | O_TRUNC, 0644);
             if (fd < 0) {
                 perror("Error opening file for error redirection");
@@ -280,18 +351,22 @@ void handleRedirection(char *args[]) {
             close(fd);
             args[i] = NULL;
         }
+
         i++;
     }
+    
 }
 
 //^z
 void terminateRunningProcess(int signum) {
+
     if (foreground_pid > 0) {
         // Send SIGKILL to the process group
         kill(-foreground_pid, SIGKILL);  // Negative PID sends to the process group
         printf("Foreground process %d and its group terminated.\n", foreground_pid);
         foreground_pid = 0;
     }
+
 }
 
 
@@ -304,6 +379,7 @@ int main(void) {
     signal(SIGTSTP, terminateRunningProcess);
 
     while (1) {
+
         background = 0;
         printf("myshell> ");
         fflush(stdout);
@@ -332,6 +408,7 @@ int main(void) {
                 if (args[2]) {
                     int index = atoi(args[2]);
                     historyCommand(index, inputBuffer, args, &background);
+                    
                     continue;
                 } else {
                     fprintf(stderr, "Usage: history -i <index>\n");
@@ -354,7 +431,7 @@ int main(void) {
         }
 
         pid_t pid = fork();
-        if (pid < 0) {
+        if (pid < 0) { // child process
             perror("Fork failed");
             continue;
         }
@@ -377,7 +454,7 @@ int main(void) {
             }
             fprintf(stderr, "Command not found: %s\n", args[0]);
             exit(1);
-        } else {
+        } else { // parent process
             if (!background) {
                 foreground_pid = pid;
                 waitpid(pid, NULL, 0);
